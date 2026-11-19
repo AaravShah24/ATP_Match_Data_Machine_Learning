@@ -1,0 +1,89 @@
+import pandas as pd
+import matplotlib.pyplot as plt; plt.style.use("ggplot")
+import shap
+from sklearn.model_selection import train_test_split 
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
+import numpy as np
+from pathlib import Path
+import seaborn as sns; sns.set(rc={"figure.figsize": (12, 10)})
+from sklearn.metrics import RocCurveDisplay
+from sklearn.metrics import accuracy_score
+from sklearn.preprocessing import StandardScaler
+
+#Data Preparation
+data = ["ATP_Match_Data/atp_matches_2021.csv", "ATP_Match_Data/atp_matches_2022.csv", "ATP_Match_Data/atp_matches_2023.csv", "ATP_Match_Data/atp_matches_2024.csv"]
+match_data = pd.concat([pd.read_csv(f) for f in data], ignore_index = True)
+match_data = match_data.drop(columns = ['tourney_id', 'tourney_name', 'tourney_level', 'draw_size', 'tourney_date', 'match_num', "score", "winner_id", "loser_id", "winner_name", "loser_name", "winner_ioc", "loser_ioc", "winner_seed", "loser_seed", "winner_entry", "loser_entry", 'round', 'minutes', 'best_of','w_SvGms', 'l_SvGms', 'w_bpSaved', 'l_bpSaved', 'w_bpFaced', 'l_bpFaced'])
+match_data = match_data.rename(columns={"w_svpt": "p1_svpt", "l_svpt": "p2_svpt", "winner_hand": "p1_hand", "winner_ht": "p1_ht", "winner_age": "p1_age", "winner_rank": "p1_rank", "winner_rank_points": "p1_rank_points", "w_ace": "p1_ace", "w_df": "p1_df", "w_1stIn": "p1_1stIn", "w_1stWon": "p1_1stWon", "w_2ndWon": "p1_2ndWon", "loser_hand": "p2_hand", "loser_ht": "p2_ht", "loser_age": "p2_age", "loser_rank": "p2_rank", "loser_rank_points": "p2_rank_points", "l_ace": "p2_ace", "l_df": "p2_df", "l_1stIn": "p2_1stIn", "l_1stWon": "p2_1stWon", "l_2ndWon": "p2_2ndWon"})
+match_data['surface'] = match_data['surface'].map({'Hard': 1, 'Grass': 2, 'Clay': 3})
+swap = np.random.default_rng(42).random(len(match_data)) < 0.5
+match_data["target"] = np.where(swap, 0, 1)
+p1_cols = match_data.filter(like="p1_").columns.tolist()
+p2_cols = match_data.filter(like="p2_").columns.tolist()
+match_data.loc[swap, p1_cols + p2_cols] = match_data.loc[swap, p2_cols + p1_cols].values
+match_data['p1_hand'] = match_data['p1_hand'].map({'R': 1, 'L': 0})
+match_data['p2_hand'] = match_data['p2_hand'].map({'R': 1, 'L': 0})
+for p in ['p1', 'p2']:
+    match_data[f'{p}_1st_in_pct'], match_data[f'{p}_1st_win_pct'], match_data[f'{p}_2nd_win_pct'], match_data[f'{p}_ace_rate'], match_data[f'{p}_df_rate'] = match_data[f'{p}_1stIn']/match_data[f'{p}_svpt'], match_data[f'{p}_1stWon']/match_data[f'{p}_1stIn'], match_data[f'{p}_2ndWon']/(match_data[f'{p}_svpt']-match_data[f'{p}_1stIn']), match_data[f'{p}_ace']/match_data[f'{p}_svpt'], match_data[f'{p}_df']/match_data[f'{p}_svpt']
+match_data = match_data.drop(columns=['p1_svpt', 'p2_svpt', 'p1_1stIn', 'p2_1stIn', 'p1_1stWon', 'p2_1stWon', 'p1_2ndWon', 'p2_2ndWon', 'p1_ace', 'p2_ace', 'p1_df', 'p2_df']).fillna(0)
+match_data = match_data.drop_duplicates().reset_index(drop=True)
+print(len(match_data))
+Path("figures").mkdir(exist_ok=True)
+match_data["target"].value_counts().plot.bar(rot=0).figure.savefig("figures/balance.png")
+plt.clf()
+plt.figure(figsize=(14, 12))
+sns.heatmap(match_data.corr(), cmap="coolwarm", center=0, square=True, linewidths=0.5)
+plt.savefig("figures/correlation.png", dpi=400, bbox_inches="tight")
+
+#Model Training
+X = match_data.drop(columns = ['target'])
+y = match_data['target']
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+random_forest_classifier_model = RandomForestClassifier(n_estimators=100, random_state=42)
+random_forest_classifier_model.fit(X_train, y_train)
+random_forest_classifier_y_pred = random_forest_classifier_model.predict(X_test)
+RandomForestAccuracy = accuracy_score(y_test, random_forest_classifier_y_pred)
+print("Random Forest Classifier Accuracy:",RandomForestAccuracy)
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+logistic_regression_model = LogisticRegression(max_iter=1000, random_state = 42)
+logistic_regression_model.fit(X_train_scaled, y_train)
+logistic_regression_y_pred = logistic_regression_model.predict(X_test_scaled)
+LogisticRegressionAccuracy = accuracy_score(y_test, logistic_regression_y_pred)
+print("Logistic Regression Accuracy:", LogisticRegressionAccuracy)
+XGBmodel = XGBClassifier(n_estimators=100, learning_rate=0.1, max_depth=6, random_state=42)
+XGBmodel.fit(X_train, y_train)
+XGB_y_pred = XGBmodel.predict(X_test)
+XGBaccuracy = accuracy_score(y_test, XGB_y_pred)
+print("Accuracy Score", XGBaccuracy)
+plt.figure()
+plt.bar(["Random Forest", "Logistic Regression", "XGBoost"], [RandomForestAccuracy, LogisticRegressionAccuracy, XGBaccuracy])
+plt.ylabel("Accuracy")
+plt.savefig("figures/model_accuracy_comparison.png")
+plt.figure()
+ax = plt.gca()
+RocCurveDisplay.from_estimator(random_forest_classifier_model, X_test, y_test, ax=ax, name="Random Forest")
+RocCurveDisplay.from_estimator(logistic_regression_model, X_test_scaled, y_test, ax=ax, name="Logistic Regression")
+RocCurveDisplay.from_estimator(XGBmodel, X_test, y_test, ax=ax, name="XGBoost")
+plt.plot([0, 1], [0, 1], "k--", label="Random Guess (AUC = 0.50)")
+plt.legend()
+plt.savefig("figures/multi_model_roc_curve.png")
+
+#SHAP Analysis
+xgb_explainer = shap.TreeExplainer(XGBmodel)
+xgb_shap = xgb_explainer.shap_values(X_test)
+lr_explainer = shap.LinearExplainer(logistic_regression_model, X_train_scaled)
+lr_shap = lr_explainer.shap_values(X_test_scaled)
+X_test_sample = X_test.sample(n=500, random_state=42)
+rf_shap = shap.Explainer(random_forest_classifier_model)(X_test_sample).values[:, :, 1]
+shap_data = pd.DataFrame({"XGB": abs(xgb_shap).mean(axis=0),"RF": abs(rf_shap).mean(axis=0),"LR": abs(lr_shap).mean(axis=0)}, index=X.columns)
+shap_data=shap_data/shap_data.sum()*100
+shap_data["avg"] = shap_data.mean(axis=1)
+shap_data = shap_data.sort_values("avg").tail(10)
+shap_data = shap_data.drop(columns="avg")
+shap_data.plot.barh(title="Cross-Model SHAP Importance (%)")
+plt.savefig("figures/shap_cross_reference.png", bbox_inches="tight")
+plt.close()
